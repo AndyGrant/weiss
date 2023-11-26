@@ -43,12 +43,103 @@ atomic_bool SEARCH_STOPPED = true;
 static int Reductions[2][32][32];
 
 
+float LMRNoisyBase = 0.13;
+float LMRNoisyDiv = 3.45;
+float LMRQuietBase = 1.30;
+float LMRQuietDiv = 2.80;
+
+int IIRDepth = 3;
+int IIRCutDepth = 8;
+int RFPDepth = 7;
+int RFPBase = 78;
+int RFPHistScore = 200;
+int RFPHistory = 6950;
+int NMPFlat = 146;
+int NMPDepth = 20;
+int NMPHist = 27150;
+int NMPRBase = 3;
+int NMPRDepth = 4;
+int NMPREvalDiv = 256;
+int NMPREvalMin = 3;
+int ProbCut = 200;
+int ProbCutDepth = 5;
+int ProbCutReturn = 176;
+int LMPImp = 0;
+int LMPNonImp = -2;
+int HistPruneDepth = 3;
+int HistPrune = 1024;
+int SEEPruneDepth = 7;
+int SEEPruneQ = 47;
+int SEEPruneN = 72;
+int SingExtDepth = 4;
+int SingExtTTDepth = 3;
+int SingExtDouble = 17;
+int LMRHist = 9600;
+int DeeperBase = 49;
+int DeeperDepth = 16;
+
+int QSFutility = 75;
+
+int Aspi = 9;
+int AspiScoreDiv = 16384;
+int Trend = 32;
+float TrendDiv = 0.50;
+int PruneDiv = 64;
+int PruneDepthDiv = 270;
+
+int HistQDiv = 6500;
+int HistCDiv = 26850;
+int HistNDiv = 15200;
+int HistBonusMax = 2560;
+int HistBonusBase = 285;
+int HistBonusDepth = 333;
+int HistMalusMax = 1900;
+int HistMalusBase = 252;
+int HistMalusDepth = 367;
+
+int Tempo = 19;
+int BasePower = -30;
+int NPower = 36;
+int BPower = 19;
+int RPower = 22;
+int QPower = 72;
+int NCPower = 71;
+int BCPower = 39;
+int RCPower = 80;
+int QCPower = 74;
+int Modifier1 = 0;
+int Modifier2 = 0;
+int Modifier3 = 63;
+int Modifier4 = 126;
+int Modifier5 = 96;
+int Modifier6 = 124;
+int Modifier7 = 124;
+int Modifier8 = 128;
+int KSCountOffset = 3;
+int KSCountScale = 8;
+int PawnScaleBase = 128;
+int PawnScaleX = 0;
+int PawnScaleBothSides = 20;
+int OCBSolo = 64;
+int OCBDuo = 96;
+
+int ScoreMovesLimit = 1380;
+int MPGood = 14540;
+int MPGoodDepth = 200;
+int MPBad = 9935;
+int MPBadDepth = 200;
+
 // Initializes the late move reduction array
 CONSTR(1) InitReductions() {
     for (int depth = 1; depth < 32; ++depth)
         for (int moves = 1; moves < 32; ++moves)
-            Reductions[0][depth][moves] = 0.13 + log(depth) * log(moves) / 3.45, // capture
-            Reductions[1][depth][moves] = 1.30 + log(depth) * log(moves) / 2.80; // quiet
+            Reductions[0][depth][moves] = LMRNoisyBase + log(depth) * log(moves) / LMRNoisyDiv, // capture
+            Reductions[1][depth][moves] = LMRQuietBase + log(depth) * log(moves) / LMRQuietDiv; // quiet
+}
+
+void Reinit() {
+    InitReductions();
+    InitSafety();
 }
 
 // Checks whether a move was already searched in multi-pv mode
@@ -121,7 +212,7 @@ static int Quiescence(Thread *thread, Stack *ss, int alpha, const int beta) {
     if (eval > alpha)
         alpha = eval;
 
-    futility = eval + 75;
+    futility = eval + QSFutility;
     bestScore = eval;
 
 moveloop:
@@ -297,10 +388,10 @@ static int AlphaBeta(Thread *thread, Stack *ss, int alpha, int beta, Depth depth
     bool improving = !inCheck && eval > (ss-2)->staticEval;
 
     // Internal iterative reduction based on Rebel's idea
-    if (pvNode && depth >= 3 && !ttMove)
+    if (pvNode && depth >= IIRDepth && !ttMove)
         depth--;
 
-    if (cutnode && depth >= 8 && !ttMove)
+    if (cutnode && depth >= IIRCutDepth && !ttMove)
         depth--;
 
     // Skip pruning in check, pv nodes, early iterations, when proving singularity, looking for terminal scores, or after a null move
@@ -308,20 +399,20 @@ static int AlphaBeta(Thread *thread, Stack *ss, int alpha, int beta, Depth depth
         goto move_loop;
 
     // Reverse Futility Pruning
-    if (   depth < 7
+    if (   depth < RFPDepth
         && eval >= beta
-        && eval - 78 * (depth - improving) - (ss-1)->histScore / 200 >= beta
-        && (!ttMove || GetHistory(thread, ss, ttMove) > 6950))
+        && eval - RFPBase * (depth - improving) - (ss-1)->histScore / RFPHistScore >= beta
+        && (!ttMove || GetHistory(thread, ss, ttMove) > RFPHistory))
         return eval;
 
     // Null Move Pruning
     if (   eval >= beta
         && eval >= ss->staticEval
-        && ss->staticEval >= beta + 146 - 20 * depth
-        && (ss-1)->histScore < 27150
+        && ss->staticEval >= beta + NMPFlat - NMPDepth * depth
+        && (ss-1)->histScore < NMPHist
         && pos->nonPawnCount[sideToMove] > (depth > 8)) {
 
-        Depth reduction = 3 + depth / 4 + MIN(3, (eval - beta) / 256);
+        Depth reduction = NMPRBase + depth / NMPRDepth + MIN(NMPREvalMin, (eval - beta) / NMPREvalDiv);
 
         ss->continuation = &thread->continuation[0][0][EMPTY][0];
 
@@ -335,10 +426,10 @@ static int AlphaBeta(Thread *thread, Stack *ss, int alpha, int beta, Depth depth
             return score >= TBWIN_IN_MAX ? beta : score;
     }
 
-    int probCutBeta = beta + 200;
+    int probCutBeta = beta + ProbCut;
 
     // ProbCut
-    if (   depth >= 5
+    if (   depth >= ProbCutDepth
         && (!ttHit || ttBound == BOUND_LOWER || ttScore >= probCutBeta)) {
 
         InitProbcutMP(&mp, thread, ss, probCutBeta - ss->staticEval);
@@ -363,7 +454,7 @@ static int AlphaBeta(Thread *thread, Stack *ss, int alpha, int beta, Depth depth
 
             // Cut if the reduced depth search beats the threshold
             if (score >= probCutBeta)
-                return score - 176;
+                return score - ProbCutReturn;
         }
     }
 
@@ -396,19 +487,19 @@ move_loop:
             && thread->doPruning
             && bestScore > -TBWIN_IN_MAX) {
 
-            int R = Reductions[quiet][MIN(31, depth)][MIN(31, moveCount)] - ss->histScore / 9600;
+            int R = Reductions[quiet][MIN(31, depth)][MIN(31, moveCount)] - ss->histScore / LMRHist;
             Depth lmrDepth = depth - 1 - R;
 
             // Quiet late move pruning
-            if (moveCount > (improving ? depth * depth : -2 +  depth * depth / 2))
+            if (moveCount > (improving ? LMPImp + depth * depth : LMPNonImp + depth * depth / 2))
                 mp.onlyNoisy = true;
 
             // History pruning
-            if (lmrDepth < 3 && ss->histScore < -1024 * depth)
+            if (lmrDepth < HistPruneDepth && ss->histScore < -HistPrune * depth)
                 continue;
 
             // SEE pruning
-            if (lmrDepth < 7 && !SEE(pos, move, quiet ? -47 * depth : -72 * depth))
+            if (lmrDepth < SEEPruneDepth && !SEE(pos, move, quiet ? -SEEPruneQ * depth : -SEEPruneN * depth))
                 continue;
         }
 
@@ -425,10 +516,10 @@ move_loop:
             goto skip_extensions;
 
         // Singular extension
-        if (   depth > 4
+        if (   depth > SingExtDepth
             && move == ttMove
             && !ss->excluded
-            && ttDepth > depth - 3
+            && ttDepth > depth - SingExtTTDepth
             && ttBound != BOUND_UPPER
             && abs(ttScore) < TBWIN_IN_MAX / 4) {
 
@@ -444,7 +535,7 @@ move_loop:
             // Singular - extend by 1 or 2 ply
             if (score < singularBeta) {
                 extension = 1;
-                if (!pvNode && score < singularBeta - 17 && ss->doubleExtensions <= 5)
+                if (!pvNode && score < singularBeta - SingExtDouble && ss->doubleExtensions <= 5)
                     extension = 2;
             // MultiCut - ttMove as well as at least one other move seem good enough to beat beta
             } else if (singularBeta >= beta)
@@ -476,7 +567,7 @@ skip_extensions:
             // Base reduction
             int r = Reductions[quiet][MIN(31, depth)][MIN(31, moveCount)];
             // Adjust reduction by move history
-            r -= ss->histScore / 9600;
+            r -= ss->histScore / LMRHist;
             // Reduce less in pv nodes
             r -= pvNode;
             // Reduce less when improving
@@ -495,7 +586,7 @@ skip_extensions:
 
             // Re-search with the same window at full depth if the reduced search failed high
             if (score > alpha && lmrDepth < newDepth) {
-                bool deeper = score > bestScore + 49 + 16 * (newDepth - lmrDepth);
+                bool deeper = score > bestScore + DeeperBase + DeeperDepth * (newDepth - lmrDepth);
 
                 newDepth += deeper;
 
@@ -579,12 +670,12 @@ static void AspirationWindow(Thread *thread, Stack *ss) {
 
     int prevScore = thread->rootMoves[multiPV].score;
 
-    int delta = 9 + prevScore * prevScore / 16384;
+    int delta = Aspi + prevScore * prevScore / AspiScoreDiv;
 
     int alpha = MAX(prevScore - delta, -INFINITE);
     int beta  = MIN(prevScore + delta,  INFINITE);
 
-    int x = CLAMP(prevScore / 2, -32, 32);
+    int x = CLAMP(prevScore * TrendDiv, -Trend, Trend);
     pos->trend = sideToMove == WHITE ? S(x, x/2) : -S(x, x/2);
 
     // Repeatedly search and adjust the window until the score is inside the window
@@ -592,8 +683,8 @@ static void AspirationWindow(Thread *thread, Stack *ss) {
 
         thread->doPruning =
             Limits.infinite ? TimeSince(Limits.start) > 1000
-                            :   TimeSince(Limits.start) >= Limits.optimalUsage / 64
-                             || depth > 2 + Limits.optimalUsage / 270;
+                            :   TimeSince(Limits.start) >= Limits.optimalUsage / PruneDiv
+                             || depth > 2 + Limits.optimalUsage / PruneDepthDiv;
 
         int score = AlphaBeta(thread, ss, alpha, beta, depth, false);
 
